@@ -6,7 +6,7 @@ import torch.nn as nn
 
 class StackedLSTMCell(nn.Module):
 
-    def __init__(self, num_layers, input_size, rnn_size, dropout):
+    def __init__(self, num_layers, input_size, rnn_size, dropout=0.0):
         super(StackedLSTMCell, self).__init__()
         self.dropout = nn.Dropout(dropout)
         self.num_layers = num_layers

@@ -4,7 +4,10 @@ import argparse
 from pathlib import Path
 import pprint
 
-project_dir = Path(__file__).resolve().parent.parent
+project_dir = Path(__file__).resolve().parent
+dataset_dir = Path('/data1/jysung710/tmp_sum/360video/').resolve()
+video_list = ['360airballoon', '360parade', '360rowing', '360scuba', '360wedding']
+save_dir = Path('/data1/jmcho/SUM_GAN/')
 
 
 def str2bool(v):
@@ -20,8 +23,24 @@ def str2bool(v):
 class Config(object):
     def __init__(self, **kwargs):
         """Configuration Class: set kwargs as class attributes with setattr"""
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
-    def __str__(self):
+        self.set_dataset_dir(self.video_type, preprocessed=self.preprocessed)
+
+    def set_dataset_dir(self, video_type='360airballon', train=True, preprocessed=True):
+        if preprocessed:
+            assert train is True
+            self.video_root_dir = dataset_dir.joinpath('resnet101_feature', video_type)
+        else:
+            if train:
+                self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'train')
+            else:
+                self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'test')
+
+        self.logdir = save_dir.joinpath(video_type)
+
+    def __repr__(self):
         """Pretty-print configurations in alphabetical order"""
         config_str = 'Configurations\n'
         config_str += pprint.pformat(self.__dict__)
@@ -39,14 +58,18 @@ def get_config(parse=True, **optional_kwargs):
 
     # Mode
     parser.add_argument('--mode', type=str, default='train')
+    parser.add_argument('--preprocessed', type=str2bool, default='True')
 
     # Train
     parser.add_argument('--batch_size', type=int, default=80)
-    
-    parser.add_argument('--n_epochs', type=int, default=50)
-    
-    parser.add_argument('--hidden_size', type=int, default=1024)
 
+    parser.add_argument('--n_epochs', type=int, default=50)
+
+    parser.add_argument('--input_size', type=int, default=2048)
+    parser.add_argument('--hidden_size', type=int, default=1024)
+    parser.add_argument('--num_layers', type=int, default=2)
+
+    parser.add_argument('--video_type', type=str, default='360airballoon')
 
     if parse:
         kwargs = parser.parse_args()
