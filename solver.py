@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 
-from summarizer import Summarizer
-from discriminator import Discriminator
+import numpy as np
+import json
+from tqdm import tqdm, trange
+
+from layers import Summarizer, Discriminator
+from utils import TensorboardWriter
 from feature_extraction import ResNetFeature
-from tensorboard import TensorboardWriter
-from tqdm import tqdm
 
 
 class Solver(object):
@@ -18,39 +20,58 @@ class Solver(object):
         self.data_loader = data_loader
 
     def build(self):
+
+        # Build Modules
+        self.linear_compress = nn.Linear(
+            self.config.input_size,
+            self.config.hidden_size).cuda()
         self.summarizer = Summarizer(
-            input_size=self.config.input_size,
+            input_size=self.config.hidden_size,
             hidden_size=self.config.hidden_size,
-            num_layers=self.config.num_layers)
+            num_layers=self.config.num_layers).cuda()
         self.discriminator = Discriminator(
             input_size=self.config.hidden_size,
             hidden_size=self.config.hidden_size,
-            num_layers=self.config.num_layers)
+            num_layers=self.config.num_layers).cuda()
+        self.model = nn.ModuleList([
+            self.linear_compress, self.summarizer, self.discriminator])
 
         if self.config.mode == 'train':
+            # Build Optimizers
             self.s_e_optimizer = optim.Adam(
                 list(self.summarizer.s_lstm.parameters())
-                + list(self.summarizer.vae.e_lstm.parameters()))
-            self.d_optimizer = optim.Adam(self.summarizer.vae.d_lstm.parameters())
-            self.c_optimizer = optim.Adam(self.discriminator.parameters())
+                + list(self.summarizer.vae.e_lstm.parameters())
+                + list(self.linear_compress.parameters()))
+            self.d_optimizer = optim.Adam(
+                list(self.summarizer.vae.d_lstm.parameters())
+                + list(self.linear_compress.parameters()))
+            self.c_optimizer = optim.Adam(
+                list(self.discriminator.parameters())
+                + list(self.linear_compress.parameters()))
+
+            self.model.train()
 
             # Overview Parameters
             print('Model Parameters')
-            for name, param in self.summarizer.named_parameters():
-                print('\t' + name + '\t', list(param.size()))
-            for name, param in self.discriminator.named_parameters():
+            for name, param in self.model.named_parameters():
                 print('\t' + name + '\t', list(param.size()))
 
             # Tensorboard
-            self.writer = TensorboardWriter(self.config.logdir)
+            self.writer = TensorboardWriter(self.config.log_dir)
 
         else:
             self.resnet = ResNetFeature()
+            self.model.eval()
+
+    @staticmethod
+    def freeze_model(module):
+        for p in module.parameters():
+            p.requires_grad = False
 
     def reconstruction_loss(self, h_origin, h_fake):
         """L2 loss between original-regenerated features at cLSTM's last hidden layer"""
 
-        return torch.sum((h_origin - h_fake).pow(2))
+        return torch.norm(h_origin - h_fake, p=2)
 
     def prior_loss(self, mu, log_variance):
         """KL( q(e|x) || N(0,1) )"""
@@ -59,35 +80,47 @@ class Solver(object):
     def sparsity_loss(self, scores):
         """Summary-Length Regularization"""
 
-        return F.mse_loss((torch.mean(scores) - self.config.summary_rate))
+        return torch.rsqrt(torch.mean(scores) - self.config.summary_rate)
 
     def gan_loss(self, original_prob, fake_prob, uniform_prob):
         """Typical GAN loss + Classify uniformly scored features"""
 
-        gan_loss = torch.log(original_prob) \
-            + torch.log(1 - fake_prob) \
-            + torch.log(1 - uniform_prob)
+        gan_loss = torch.log(original_prob) + torch.log(1 - fake_prob) \
+            + torch.log(1 - uniform_prob)  # Discriminate uniform score
 
         return gan_loss
 
     def train(self):
-        for epoch_i in range(self.config.n_epochs):
-            for batch_i, image_features in enumerate(tqdm(self.data_loader, ncols=80)):
+        step = 0
+        for epoch_i in trange(self.config.n_epochs, desc='Epoch', ncols=80):
+            s_e_loss_history = []
+            d_loss_history = []
+            c_loss_history = []
+            for batch_i, image_features in enumerate(tqdm(
+                    self.data_loader, desc='Batch', ncols=80, leave=False)):
 
-                # batch_size: 1
-                # [1, seq_len, 2048]
-                original_features = Variable(image_features).cuda()
+                if image_features.size(1) > 10000:
+                    continue
 
-                # [seq_len, 1, 2048]
-                original_features = original_features.transpose(0, 1)
+                # [batch_size=1, seq_len, 2048]
+                # [seq_len, 2048]
+                image_features = image_features.view(-1, self.config.input_size)
+
+                # [seq_len, 2048]
+                image_features_ = Variable(image_features).cuda()
 
                 #---- Train sLSTM, eLSTM ----#
+                if self.config.verbose:
+                    tqdm.write('\nTraining sLSTM and eLSTM...')
+
+                # [seq_len, 1, hidden_size]
+                original_features = self.linear_compress(image_features_.detach()).unsqueeze(1)
+
                 scores, h_mu, h_log_variance, generated_features = self.summarizer(
                     original_features)
                 _, _, _, uniform_features = self.summarizer(
                     original_features, uniform=True)
 
-                # Forward propagation
                 h_origin, original_prob = self.discriminator(original_features)
                 h_fake, fake_prob = self.discriminator(generated_features)
                 h_uniform, uniform_prob = self.discriminator(uniform_features)
@@ -99,14 +132,23 @@ class Solver(object):
                 s_e_loss = reconstruction_loss + prior_loss + sparsity_loss
 
                 self.s_e_optimizer.zero_grad()
-                s_e_loss.backward()
+                s_e_loss.backward()  # retain_graph=True)
                 self.s_e_optimizer.step()
 
-                self.writer.update_loss(s_e_loss, batch_i, 's_e_loss')
+                s_e_loss_history.append(s_e_loss.data)
 
                 #---- Train dLSTM ----#
+                if self.config.verbose:
+                    tqdm.write('Training dLSTM...')
 
-                # Forward propagation
+                # [seq_len, 1, hidden_size]
+                original_features = self.linear_compress(image_features_.detach()).unsqueeze(1)
+
+                scores, h_mu, h_log_variance, generated_features = self.summarizer(
+                    original_features.detach())
+                _, _, _, uniform_features = self.summarizer(
+                    original_features.detach(), uniform=True)
+
                 h_origin, original_prob = self.discriminator(original_features)
                 h_fake, fake_prob = self.discriminator(generated_features)
                 h_uniform, uniform_prob = self.discriminator(uniform_features)
@@ -117,31 +159,81 @@ class Solver(object):
                 d_loss = reconstruction_loss + gan_loss
 
                 self.d_optimizer.zero_grad()
-                d_loss.backward()
+                d_loss.backward()  # retain_graph=True)
                 self.d_optimizer.step()
 
-                self.writer.update_loss(d_loss, batch_i, 'd_loss')
+                d_loss_history.append(d_loss.data)
 
                 #---- Train cLSTM ----#
+                if self.config.verbose:
+                    tqdm.write('Training cLSTM...')
+                # [seq_len, 1, hidden_size]
+                original_features = self.linear_compress(image_features_.detach()).unsqueeze(1)
 
-                # Forward propagation
+                scores, h_mu, h_log_variance, generated_features = self.summarizer(
+                    original_features)
+                _, _, _, uniform_features = self.summarizer(
+                    original_features, uniform=True)
+
                 h_origin, original_prob = self.discriminator(original_features)
                 h_fake, fake_prob = self.discriminator(generated_features)
                 h_uniform, uniform_prob = self.discriminator(uniform_features)
 
-                c_loss = self.gan_loss(original_prob, fake_prob, uniform_prob)
+                # Maximization
+                c_loss = -1 * self.gan_loss(original_prob, fake_prob, uniform_prob)
 
                 self.c_optimizer.zero_grad()
                 c_loss.backward()
                 self.c_optimizer.step()
 
-                self.writer.update_loss(c_loss, batch_i, 'c_loss')
+                c_loss_history.append(c_loss.data)
+
+                if self.config.verbose:
+                    print('Plotting...')
+                self.writer.update_loss(s_e_loss.data, step, 's_e_loss')
+                self.writer.update_loss(d_loss.data, step, 'd_loss')
+                self.writer.update_loss(c_loss.data, step, 'c_loss')
+                step += 1
+
+            s_e_loss = torch.stack(s_e_loss_history).mean()
+            d_loss = torch.stack(d_loss_history).mean()
+            c_loss = torch.stack(c_loss_history).mean()
+
+            # Plot
+            if self.config.verbose:
+                print('Plotting...')
+            self.writer.update_loss(s_e_loss, epoch_i, 's_e_loss_epoch')
+            self.writer.update_loss(d_loss, epoch_i, 'd_loss_epoch')
+            self.writer.update_loss(c_loss, epoch_i, 'c_loss_epoch')
+
+            # Save parameters at checkpoint
+            ckpt_path = self.config.save_dir.joinpath(f'epoch-{epoch_i}.pkl')
+            print(f'Save parameters at {str(ckpt_path)}')
+            torch.save(self.model.state_dict(), ckpt_path)
 
     def evalulation(self):
-        # [seq_len, batch=1, 2048]
-        # images = self.resnet(images)
+        checkpoint = self.config.ckpt_path
+        print(f'Load parameters from {checkpoint}')
+        self.model.load_state_dict(torch.load(checkpoint))
 
-        pass
+        out_dict = {}
+
+        for video_tensor, video_name in enumerate(tqdm(self.data_loader)):
+
+            # [seq_len, batch=1, 2048]
+            video_variable = Variable(video_tensor, volatile=True).cuda()
+
+            features = self.resnet(video_variable)
+
+            # [seq_len]
+            scores = self.summarizer.s_lstm(features).squeeze(1)
+
+            scores = list(np.array(scores.data))
+
+            out_dict[video_name, scores]
+
+            with open(self.score_path, 'w') as f:
+                json.dump(out_dict, f)
 
     def pretrain(self):
         pass

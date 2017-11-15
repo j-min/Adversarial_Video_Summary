@@ -26,19 +26,18 @@ class Config(object):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-        self.set_dataset_dir(self.video_type, preprocessed=self.preprocessed)
+        self.preprocessed = (self.mode == 'train')
+        self.set_dataset_dir(self.video_type)
 
-    def set_dataset_dir(self, video_type='360airballon', train=True, preprocessed=True):
-        if preprocessed:
-            assert train is True
+    def set_dataset_dir(self, video_type='360airballon'):
+        if self.preprocessed:
             self.video_root_dir = dataset_dir.joinpath('resnet101_feature', video_type)
         else:
-            if train:
-                self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'train')
-            else:
-                self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'test')
-
-        self.logdir = save_dir.joinpath(video_type)
+            self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'test')
+        self.save_dir = save_dir.joinpath(video_type)
+        self.log_dir = self.save_dir
+        self.ckpt_path = self.save_dir.joinpath(f'epoch-{self.epoch}.pkl')
+        self.score_path = save_dir.joinpath(video_type + '_score.json')
 
     def __repr__(self):
         """Pretty-print configurations in alphabetical order"""
@@ -58,18 +57,24 @@ def get_config(parse=True, **optional_kwargs):
 
     # Mode
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--preprocessed', type=str2bool, default='True')
+    parser.add_argument('--verbose', type=str2bool, default='False')
 
     # Train
-    parser.add_argument('--batch_size', type=int, default=80)
-
     parser.add_argument('--n_epochs', type=int, default=50)
-
     parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--hidden_size', type=int, default=1024)
+    parser.add_argument('--hidden_size', type=int, default=500)
+    # parser.add_argument('--sLSTM_size', type=int, default=10)
+    # parser.add_argument('--eLSTM_size', type=int, default=10)
+    # parser.add_argument('--dLSTM_size', type=int, default=10)
+    # parser.add_argument('--cLSTM_size', type=int, default=10)
     parser.add_argument('--num_layers', type=int, default=2)
 
+    parser.add_argument('--summary_rate', type=float, default=0.3)
+
     parser.add_argument('--video_type', type=str, default='360airballoon')
+
+    # load epoch
+    parser.add_argument('--epoch', type=int, default=2)
 
     if parse:
         kwargs = parser.parse_args()

@@ -33,12 +33,14 @@ class VideoData(Dataset):
                 img_tensor = self.transform(img)
                 images.append(img_tensor)
 
-            return torch.stack(images)
+            return torch.stack(images), img_path.parent.name[2:]
 
 
 def get_loader(root, preprocessed=True):
-    dataset = VideoData(root, preprocessed)
-    return DataLoader(dataset=dataset, batch_size=1)
+    if preprocessed:
+        return DataLoader(VideoData(root, preprocessed), batch_size=1)
+    else:
+        return VideoData(root, preprocessed)
 
 
 if __name__ == '__main__':

@@ -40,6 +40,7 @@ class ResNetFeature(nn.Module):
         else:
             resnet = models.resnet152(pretrained=True)
         resnet.float()
+        resnet.cuda()
         resnet.eval()
 
         module_list = list(resnet.children())

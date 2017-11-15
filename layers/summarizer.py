@@ -1,38 +1,25 @@
 # -*- coding: utf-8 -*-
-
 import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-from lstmcell import StackedLSTMCell
+from .lstmcell import StackedLSTMCell
 
 
 class sLSTM(nn.Module):
-    def __init__(self, input_size=2048, hidden_size=1024, num_layers=2):
+    def __init__(self, input_size, hidden_size, num_layers=2):
         """Scoring LSTM"""
         super().__init__()
 
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, bidirectional=True)
         self.out = nn.Sequential(
-            nn.Linear(2 * hidden_size, 1),
+            nn.Linear(hidden_size * 2, 1),  # bidirection => scalar
             nn.Sigmoid())
-
-    def score(self, features):
-        """
-        Args:
-            features: [seq_len, 1, 2048]
-        Return:
-            scores: [seq_len, 1]
-        """
-
-        scores = self.out(features.squeeze(1))
-
-        return scores
 
     def forward(self, features, init_hidden=None):
         """
         Args:
-            features: [seq_len, 1, 2048] (pool5 features)
+            features: [seq_len, 1, 100] (compressed pool5 features)
         Return:
             scores [seq_len, 1]
         """
@@ -42,28 +29,31 @@ class sLSTM(nn.Module):
         features, (h_n, c_n) = self.lstm(features)
 
         # [seq_len, 1]
-        scores = self.score(features)
+        scores = self.out(features.squeeze(1))
 
         return scores
 
 
 class eLSTM(nn.Module):
-    def __init__(self, input_size=1024, hidden_size=2048, num_layers=2):
+    def __init__(self, input_size, hidden_size, num_layers=2):
         """Encoder LSTM"""
         super().__init__()
 
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers)
 
+        self.linear_mu = nn.Linear(hidden_size, hidden_size)
+        self.linear_var = nn.Linear(hidden_size, hidden_size)
+
     def forward(self, frame_features):
         """
         Args:
-            frame_features: [seq_len, 1, 2*hidden_size]
+            frame_features: [seq_len, 1, hidden_size]
         Return:
             last hidden
                 h_last [num_layers=2, 1, hidden_size]
                 c_last [num_layers=2, 1, hidden_size]
         """
-
+        self.lstm.flatten_parameters()
         _, (h_last, c_last) = self.lstm(frame_features)
 
         return (h_last, c_last)
@@ -108,26 +98,33 @@ class dLSTM(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, input_size=2048, hidden_size=2048, num_layers=2):
+    def __init__(self, input_size, hidden_size, num_layers=2):
         super().__init__()
         self.e_lstm = eLSTM(input_size, hidden_size, num_layers)
         self.d_lstm = dLSTM(input_size, hidden_size, num_layers)
 
     def reparameterize(self, mu, log_variance):
-        """Sample z via reparameterization trick"""
+        """Sample z via reparameterization trick
+        Args:
+            mu: [num_layers, hidden_size]
+            log_var: [num_layers, hidden_size]
+        Return:
+            h: [num_layers, 1, hidden_size]
+        """
         std = torch.exp(0.5 * log_variance)
 
         # e ~ N(0,1)
         epsilon = Variable(torch.randn(std.size())).cuda()
 
-        return mu + epsilon * std
+        # [num_layers, 1, hidden_size]
+        return (mu + epsilon * std).unsqueeze(1)
 
     def forward(self, features):
         """
         Args:
-            features: [seq_len, 1, 2048]
+            features: [seq_len, 1, hidden_size]
         Return:
-            h: [2=num_layers, 1, 2048]
+            h: [2=num_layers, 1, hidden_size]
             decoded_features: [seq_len, 1, 2048]
         """
         seq_len = features.size(0)
@@ -135,11 +132,15 @@ class VAE(nn.Module):
         # [num_layers, 1, hidden_size]
         h, c = self.e_lstm(features)
 
-        h_mu, h_log_variance = torch.chunk(h, chunks=2, dim=2)
+        # [num_layers, hidden_size]
+        h = h.squeeze(1)
 
+        # [num_layers, hidden_size]
+        h_mu = self.e_lstm.linear_mu(h)
+        h_log_variance = self.e_lstm.linear_var(h)
+
+        # [num_layers, 1, hidden_size]
         h = self.reparameterize(h_mu, h_log_variance)
-
-        self.d_lstm.flatten_parameters()
 
         # [seq_len, 1, hidden_size]
         decoded_features = self.d_lstm(seq_len, init_hidden=(h, c))
@@ -152,10 +153,10 @@ class VAE(nn.Module):
 
 
 class Summarizer(nn.Module):
-    def __init__(self, input_size=2048, hidden_size=1024, num_layers=2):
+    def __init__(self, input_size, hidden_size, num_layers=2):
         super().__init__()
         self.s_lstm = sLSTM(input_size, hidden_size, num_layers)
-        self.vae = VAE(input_size, 2 * hidden_size, num_layers)
+        self.vae = VAE(input_size, hidden_size, num_layers)
 
     def forward(self, image_features, uniform=False):
         # Apply weights
@@ -163,9 +164,10 @@ class Summarizer(nn.Module):
             # [seq_len, 1]
             scores = self.s_lstm(image_features)
 
-            # [seq_len, 1, 2048]
-            weighted_features = image_features * scores
+            # [seq_len, 1, hidden_size]
+            weighted_features = image_features * scores.view(-1, 1, 1)
         else:
+            scores = None
             weighted_features = image_features
 
         h_mu, h_log_variance, decoded_features = self.vae(weighted_features)

@@ -1,15 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Mon Nov 13 20:49:00 2017
-
-@author: j-min
-"""
-
 import torch.nn as nn
 
 
 class cLSTM(nn.Module):
-    def __init__(self, input_size=1024, hidden_size=1024, num_layers=2):
+    def __init__(self, input_size, hidden_size, num_layers=2):
         """Discriminator LSTM"""
         super().__init__()
 
@@ -22,6 +16,7 @@ class cLSTM(nn.Module):
         Return:
             last_h: [1, hidden_size]
         """
+        self.lstm.flatten_parameters()
 
         # output: seq_len, batch, hidden_size * num_directions
         # h_n, c_n: num_layers * num_directions, batch_size, hidden_size
@@ -34,16 +29,18 @@ class cLSTM(nn.Module):
 
 
 class Discriminator(nn.Module):
-    def __init__(self, input_size=1024, hidden_size=1024, num_layers=2):
-        """Discriminator: cLSTM + output projection to scalar"""
+    def __init__(self, input_size, hidden_size, num_layers=2):
+        """Discriminator: cLSTM + output projection to probability"""
         super().__init__()
         self.cLSTM = cLSTM(input_size, hidden_size, num_layers)
-        self.out = nn.Linear(hidden_size, 1)
+        self.out = nn.Sequential(
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid())
 
     def forward(self, features):
         """
         Args:
-            features: [seq_len, 1, 1024]
+            features: [seq_len, 1, hidden_size]
         Return:
             h : [1, hidden_size]
                 Last h from top layer of discriminator
@@ -54,7 +51,7 @@ class Discriminator(nn.Module):
         # [1, hidden_size]
         h = self.cLSTM(features)
 
-        # [1, 1]
+        # [1]
         prob = self.out(h)
 
         return h, prob

@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
-import torch
-from torch.autograd import Variable
-
-def reverse_order(tensor):
-    if isinstance(tensor, torch.Tensor):
-        idx = [i for i in range(tensor.size(0)-1, -1, -1)]
-        idx = torch.LongTensor(idx)
-        inverted_tensor = tensor.index_select(0, idx)
-        return inverted_tensor
-    elif isinstance(tensor, Variable):
-        tensor.data = reverse_order(tensor.data)
-        return tensor
+from tensorboardX import SummaryWriter
 
 
-if __name__ == '__main__':
-    a = Variable(torch.randn(2,2,3))
-    print(a)
-    print(reverse_order(a))
-    
+class TensorboardWriter(SummaryWriter):
+    def __init__(self, logdir):
+        """
+        Extended SummaryWriter Class from tensorboard-pytorch (tensorbaordX)
+        https://github.com/lanpa/tensorboard-pytorch/blob/master/tensorboardX/writer.py
+        Internally calls self.file_writer
+        """
+        super(TensorboardWriter, self).__init__(logdir)
+        self.logdir = self.file_writer.get_logdir()
+
+    def update_parameters(self, module, step_i):
+        """
+        module: nn.Module
+        """
+        for name, param in module.named_parameters():
+            self.add_histogram(name, param.clone().cpu().data.numpy(), step_i)
+
+    def update_loss(self, loss, step_i, name='loss'):
+        self.add_scalar(name, loss, step_i)
+
+    def update_histogram(self, values, step_i, name='hist'):
+        self.add_histogram(name, values, step_i)
