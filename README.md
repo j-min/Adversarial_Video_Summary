@@ -12,5 +12,7 @@ Code author: [Jaemin cho](https://github.com/j-min)
 
 ![Model figure 2](imgs/fig2.png)
 
+![Model figure 3](imgs/fig3.png)
+
 # Algorithm
-![Algorithm figure](imgs/fig3.png)
+![Algorithm figure](imgs/fig4.png)
