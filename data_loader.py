@@ -11,10 +11,11 @@ import numpy as np
 
 
 class VideoData(Dataset):
-    def __init__(self, root, preprocessed=True, transform=resnet_transform):
+    def __init__(self, root, preprocessed=True, transform=resnet_transform, with_name=False):
         self.root = root
         self.preprocessed = preprocessed
         self.transform = transform
+        self.with_name = with_name
         self.video_list = list(self.root.iterdir())
 
     def __len__(self):
@@ -24,7 +25,10 @@ class VideoData(Dataset):
         if self.preprocessed:
             image_path = self.video_list[index]
             with h5py.File(image_path, 'r') as f:
-                return torch.Tensor(np.array(f['pool5']))
+                if self.with_name:
+                    return torch.Tensor(np.array(f['pool5'])), image_path.name[:-5]
+                else:
+                    return torch.Tensor(np.array(f['pool5']))
 
         else:
             images = []
@@ -33,14 +37,14 @@ class VideoData(Dataset):
                 img_tensor = self.transform(img)
                 images.append(img_tensor)
 
-            return torch.stack(images), img_path.parent.name[2:]
+            return torch.stack(images), img_path.parent.name[4:]
 
 
-def get_loader(root, preprocessed=True):
-    if preprocessed:
-        return DataLoader(VideoData(root, preprocessed), batch_size=1)
+def get_loader(root, mode):
+    if mode.lower() == 'train':
+        return DataLoader(VideoData(root), batch_size=1)
     else:
-        return VideoData(root, preprocessed)
+        return VideoData(root, with_name=True)
 
 
 if __name__ == '__main__':

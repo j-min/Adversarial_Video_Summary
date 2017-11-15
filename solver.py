@@ -10,14 +10,15 @@ from tqdm import tqdm, trange
 
 from layers import Summarizer, Discriminator
 from utils import TensorboardWriter
-from feature_extraction import ResNetFeature
+# from feature_extraction import ResNetFeature
 
 
 class Solver(object):
-    def __init__(self, config=None, data_loader=None):
+    def __init__(self, config=None, train_loader=None, test_loader=None):
         """Class that Builds, Trains and Evaluates SUM-GAN model"""
         self.config = config
-        self.data_loader = data_loader
+        self.train_loader = train_loader
+        self.test_loader = test_loader
 
     def build(self):
 
@@ -59,10 +60,6 @@ class Solver(object):
             # Tensorboard
             self.writer = TensorboardWriter(self.config.log_dir)
 
-        else:
-            self.resnet = ResNetFeature()
-            self.model.eval()
-
     @staticmethod
     def freeze_model(module):
         for p in module.parameters():
@@ -97,7 +94,7 @@ class Solver(object):
             d_loss_history = []
             c_loss_history = []
             for batch_i, image_features in enumerate(tqdm(
-                    self.data_loader, desc='Batch', ncols=80, leave=False)):
+                    self.train_loader, desc='Batch', ncols=80, leave=False)):
 
                 if image_features.size(1) > 10000:
                     continue
@@ -211,28 +208,40 @@ class Solver(object):
             print(f'Save parameters at {str(ckpt_path)}')
             torch.save(self.model.state_dict(), ckpt_path)
 
-    def evalulation(self):
-        checkpoint = self.config.ckpt_path
-        print(f'Load parameters from {checkpoint}')
-        self.model.load_state_dict(torch.load(checkpoint))
+            self.evaluate(epoch_i)
+
+            self.model.train()
+
+    def evaluate(self, epoch_i):
+        # checkpoint = self.config.ckpt_path
+        # print(f'Load parameters from {checkpoint}')
+        # self.model.load_state_dict(torch.load(checkpoint))
+
+        self.model.eval()
 
         out_dict = {}
 
-        for video_tensor, video_name in enumerate(tqdm(self.data_loader)):
+        for video_tensor, video_name in tqdm(
+                self.test_loader, desc='Evaluate', ncols=80, leave=False):
 
             # [seq_len, batch=1, 2048]
-            video_variable = Variable(video_tensor, volatile=True).cuda()
+            video_tensor = video_tensor.view(-1, self.config.input_size)
+            video_feature = Variable(video_tensor, volatile=True).cuda()
 
-            features = self.resnet(video_variable)
+            # [seq_len, 1, hidden_size]
+            video_feature = self.linear_compress(video_feature.detach()).unsqueeze(1)
 
             # [seq_len]
-            scores = self.summarizer.s_lstm(features).squeeze(1)
+            scores = self.summarizer.s_lstm(video_feature).squeeze(1)
 
-            scores = list(np.array(scores.data))
+            scores = np.array(scores.data).tolist()
 
-            out_dict[video_name, scores]
+            out_dict[video_name] = scores
 
-            with open(self.score_path, 'w') as f:
+            score_save_path = self.config.score_path.joinpath(f'_{epoch_i}.json')
+            score_save_path.chmod(0o777)
+            with open(score_save_path, 'w') as f:
+                tqdm.write(f'Saving score at {str(score_save_path)}.')
                 json.dump(out_dict, f)
 
     def pretrain(self):

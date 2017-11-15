@@ -8,6 +8,7 @@ project_dir = Path(__file__).resolve().parent
 dataset_dir = Path('/data1/jysung710/tmp_sum/360video/').resolve()
 video_list = ['360airballoon', '360parade', '360rowing', '360scuba', '360wedding']
 save_dir = Path('/data1/jmcho/SUM_GAN/')
+score_dir = Path('/data1/common_datasets/tmp_sum/360video/results/SUM-GAN/')
 
 
 def str2bool(v):
@@ -26,18 +27,17 @@ class Config(object):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
-        self.preprocessed = (self.mode == 'train')
         self.set_dataset_dir(self.video_type)
 
     def set_dataset_dir(self, video_type='360airballon'):
         if self.preprocessed:
-            self.video_root_dir = dataset_dir.joinpath('resnet101_feature', video_type)
+            self.video_root_dir = dataset_dir.joinpath('resnet101_feature', video_type, self.mode)
         else:
             self.video_root_dir = dataset_dir.joinpath('video_subshot', video_type, 'test')
         self.save_dir = save_dir.joinpath(video_type)
         self.log_dir = self.save_dir
         self.ckpt_path = self.save_dir.joinpath(f'epoch-{self.epoch}.pkl')
-        self.score_path = save_dir.joinpath(video_type + '_score.json')
+        self.score_path = score_dir.joinpath(video_type)
 
     def __repr__(self):
         """Pretty-print configurations in alphabetical order"""
@@ -58,6 +58,7 @@ def get_config(parse=True, **optional_kwargs):
     # Mode
     parser.add_argument('--mode', type=str, default='train')
     parser.add_argument('--verbose', type=str2bool, default='False')
+    parser.add_argument('--preprocessed', type=str2bool, default='True')
 
     # Train
     parser.add_argument('--n_epochs', type=int, default=50)
