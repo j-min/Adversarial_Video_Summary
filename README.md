@@ -8,7 +8,7 @@
 
 ## Changes from Original paper
 - Video feature extractor
-    - GoogleNet (1024) => ResNet-101 pool5 (2048)
+    - GoogleNet pool5 (1024) => ResNet-101 pool5 (2048)
     - Followed by linear projection to 500-dim
 - Stable GAN Training
     - Discriminator's learning rate: 1e-5 (Others: 1e-4)
