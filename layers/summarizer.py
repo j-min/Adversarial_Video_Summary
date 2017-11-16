@@ -103,6 +103,8 @@ class VAE(nn.Module):
         self.e_lstm = eLSTM(input_size, hidden_size, num_layers)
         self.d_lstm = dLSTM(input_size, hidden_size, num_layers)
 
+        self.softplus = nn.Softplus()
+
     def reparameterize(self, mu, log_variance):
         """Sample z via reparameterization trick
         Args:
@@ -137,7 +139,7 @@ class VAE(nn.Module):
 
         # [num_layers, hidden_size]
         h_mu = self.e_lstm.linear_mu(h)
-        h_log_variance = self.e_lstm.linear_var(h)
+        h_log_variance = torch.log(self.softplus(self.e_lstm.linear_var(h)))
 
         # [num_layers, 1, hidden_size]
         h = self.reparameterize(h_mu, h_log_variance)

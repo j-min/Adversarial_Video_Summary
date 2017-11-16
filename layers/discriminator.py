@@ -52,7 +52,7 @@ class Discriminator(nn.Module):
         h = self.cLSTM(features)
 
         # [1]
-        prob = self.out(h)
+        prob = self.out(h).squeeze()
 
         return h, prob
 
